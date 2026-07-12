@@ -8,6 +8,10 @@ DATABASE_URL-style environment variables below.
 from datetime import timedelta
 from pathlib import Path
 import os
+try:
+    import dj_database_url
+except Exception:
+    dj_database_url = None
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -35,6 +39,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -65,14 +70,25 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 
 # Database
-# File-based SQLite by default. Swap ENGINE/NAME for Postgres in production,
-# e.g. via environment variables.
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+# File-based SQLite locally by default. In production, set the DATABASE_URL
+# env var (e.g. postgres://user:pass@host:5432/dbname) and it takes over
+# automatically -- most hosts (Render, Railway, Heroku) inject this for you
+# when you attach a Postgres addon.
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if DATABASE_URL:
+    if not dj_database_url:
+        raise ImportError(
+            "dj_database_url is required when using DATABASE_URL. Install it or unset DATABASE_URL."
+        )
+
+    DATABASES = {"default": dj_database_url.parse(DATABASE_URL, conn_max_age=600)}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
     }
-}
 
 AUTH_USER_MODEL = "accounts.User"
 
@@ -89,6 +105,12 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+STORAGES = {
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
@@ -109,7 +131,19 @@ SIMPLE_JWT = {
     "ROTATE_REFRESH_TOKENS": False,
 }
 
-# CORS - allow the local Vite dev server to talk to the API.
+# CORS - allow the local Vite dev server (and, in production, your deployed
+# frontend's origin) to talk to the API. Set CORS_ALLOWED_ORIGINS in your
+# host's env vars to a comma-separated list, e.g.
+# "https://your-app.vercel.app,http://localhost:5173"
 CORS_ALLOWED_ORIGINS = os.environ.get(
     "CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
 ).split(",")
+
+# Django admin/forms need to trust the same origins for CSRF once you're
+# behind HTTPS on a real domain.
+CSRF_TRUSTED_ORIGINS = [o for o in CORS_ALLOWED_ORIGINS if o.startswith("https://")]
+
+if not DEBUG:
+    SECURE_SSL_REDIRECT = os.environ.get("DJANGO_SECURE_SSL_REDIRECT", "True") == "True"
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
